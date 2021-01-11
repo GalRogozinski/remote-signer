@@ -96,7 +96,7 @@ impl SignatureDispatcher for Ed25519SignatureDispatcher {
 
 
         // Clone the iterator to avoid consuming it for the next map
-        if matched_signers.clone().iter().any(|signer| signer.is_none()) {
+        if matched_signers.is_empty() {
             warn!("Requested public key is not known!");
             warn!("Request: {:?}", request);
             warn!("Available Signers: {:?}", self.keysigners);
