@@ -47,7 +47,7 @@ impl Ed25519SignatureDispatcher {
     {
         Ok(
             Channel::from_shared(endpoint)?
-                // .tls_config(self.tls_auth.clone())?
+                .tls_config(self.tls_auth.clone())?
                 .connect()
                 .await?
         )
