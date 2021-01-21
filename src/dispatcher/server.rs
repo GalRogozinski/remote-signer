@@ -5,8 +5,7 @@ use std::convert::TryFrom;
 use std::error::Error;
 use std::net::SocketAddr;
 use std::ops::{DerefMut, Deref};
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use async_std::sync::{Arc, Mutex};
 
 use clap::{App, Arg, ArgMatches};
 use ed25519_zebra::{Signature, VerificationKey};
@@ -45,9 +44,12 @@ pub struct Ed25519SignatureDispatcher {
 impl Ed25519SignatureDispatcher {
     async fn connect_signer_tls(&self, endpoint: String) -> Result<Channel, Box<dyn Error>>
     {
+        let tls_config = Arc::clone(&self.tls_auth);
+
+        let config = tls_config.into_inner();
         Ok(
             Channel::from_shared(endpoint)?
-                .tls_config(self.tls_auth.clone())?
+                .tls_config(config)?
                 .connect()
                 .await?
         )
@@ -86,7 +88,7 @@ impl SignatureDispatcher for Ed25519SignatureDispatcher {
 
         let mut matched_signers: Vec<Option<BytesKeySigner>> = Vec::new();
         {
-            let mut keysigners_guard = self.keysigners.lock().unwrap();
+            let mut keysigners_guard = self.keysigners.lock().await;
             for signer in keysigners_guard.iter() {
                 if pub_keys_unique.any(|key| signer.pubkey.eq(key)) {
                     matched_signers.push(Some(signer.to_owned()));
@@ -251,11 +253,11 @@ mut tls_auth_a: Arc<Mutex<ClientTlsConfig>>) -> Result<(), Box<dyn std::error::E
         info!("got signal HUP");
         let (config, keysigners, _, tls_auth) = parse_confs(conf_path).await?;
         // config_a.clone_from(&Arc::new(config));
-        let mut signers = key_signers_a.lock().unwrap();
+        let mut signers = key_signers_a.lock().await;
         signers.clear();
         for bk in keysigners  {
             signers.push(bk)
         }
-        // tls_auth_a.clone_from(&Arc::new(tls_auth));
+        tls_auth_a.clone_from(&Arc::new(Mutex::new(tls_auth)));
     }
 }
