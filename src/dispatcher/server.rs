@@ -9,7 +9,7 @@ use async_std::sync::{Arc, Mutex};
 
 use clap::{App, Arg, ArgMatches};
 use ed25519_zebra::{Signature, VerificationKey};
-use futures::future;
+use futures::{future, TryFutureExt};
 use futures::join;
 use itertools::Itertools;
 use log::LevelFilter;
@@ -45,11 +45,11 @@ impl Ed25519SignatureDispatcher {
     async fn connect_signer_tls(&self, endpoint: String) -> Result<Channel, Box<dyn Error>>
     {
         let tls_config = Arc::clone(&self.tls_auth);
+        let conf = tls_config.lock().await;
 
-        let config = tls_config.into_inner();
         Ok(
             Channel::from_shared(endpoint)?
-                .tls_config(config)?
+                .tls_config(*conf)?
                 .connect()
                 .await?
         )
