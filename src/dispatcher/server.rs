@@ -80,7 +80,7 @@ impl Ed25519SignatureDispatcher {
 }
 
 #[tonic::async_trait]
-impl SignatureDispatcher for Arc<Ed25519SignatureDispatcher> {
+impl SignatureDispatcher for Arc<Mutex<Ed25519SignatureDispatcher>> {
     async fn sign_milestone(
         &self,
         request: Request<SignMilestoneRequest>,
@@ -88,13 +88,14 @@ impl SignatureDispatcher for Arc<Ed25519SignatureDispatcher> {
 
         debug!("Got Request: {:?}", request);
 
+
         let r = request.get_ref();
         // Check that the pubkeys do not repeat
         let pub_keys_unique = r.pub_keys.iter().unique();
         // We do not need to check for the lexicographical sorting of the keys, it is not our job
-
+        let self_guard = self.lock().await;
         let matched_signers = pub_keys_unique.map(|pubkey| {
-            self.keysigners.iter().find(
+            self_guard.keysigners.iter().find(
                 |keysigner| keysigner.pubkey == *pubkey
             )
         });
@@ -103,7 +104,7 @@ impl SignatureDispatcher for Arc<Ed25519SignatureDispatcher> {
         if matched_signers.clone().any(|signer| signer.is_none()) {
             warn!("Requested public key is not known!");
             warn!("Request: {:?}", request);
-            warn!("Available Signers: {:?}", self.keysigners);
+            warn!("Available Signers: {:?}", self_guard.keysigners);
             return Err(Status::invalid_argument("I don't know the signer for one or more of the provided public keys."))
         }
 
@@ -115,7 +116,7 @@ impl SignatureDispatcher for Arc<Ed25519SignatureDispatcher> {
             // map of Futures<Output=Result<SignWithKeyResponse, Error>>
             confirmed_signers.clone().map(|signer|
                 async move {
-                    let channel = match self.connect_signer_tls(signer.endpoint.clone()).await {
+                    let channel = match self_guard.connect_signer_tls(signer.endpoint.clone()).await {
                         Ok(channel) => channel,
                         Err(e) => {
                             error!("Error connecting to Signer!");
