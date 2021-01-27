@@ -34,11 +34,6 @@ pub mod signer {
     tonic::include_proto!("signer");
 }
 
-static DISPATCHER: OnceCell<Ed25519SignatureDispatcher> = OnceCell::new();
-// lazy_static! {
-    // static ref DIS: Mutex<Ed25519SignatureDispatcher> = Mutex::new
-// }
-
 #[derive(Debug)]
 pub struct Ed25519SignatureDispatcher {
     config: DispatcherConfig,
@@ -85,7 +80,7 @@ impl Ed25519SignatureDispatcher {
 }
 
 #[tonic::async_trait]
-impl SignatureDispatcher for Ed25519SignatureDispatcher {
+impl SignatureDispatcher for Arc<Ed25519SignatureDispatcher> {
     async fn sign_milestone(
         &self,
         request: Request<SignMilestoneRequest>,
@@ -202,15 +197,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Start");
 
     let conf_path = config_arg.value_of("config").unwrap();
-    let addr = configure_dispatcher(conf_path).await?;
+    let (config, keysigners, addr, tls_auth) = parse_confs(conf_path).await?;
+    let dispatcher = Arc::new(Mutex::new(Ed25519SignatureDispatcher::new(&config, &tls_auth, &keysigners)));
     // debug!("Initialized Dispatcher server: {:?}", DISPATCHER.get());
 
     let mut server = Server::builder();
-    let serv = server.add_service(SignatureDispatcherServer::new(DISPATCHER.get().expect(DISPATCH_INIT_ERROR)))
+    let serv = server.add_service(dispatcher)
         .serve(addr);
     info!("Serving on {}...", addr);
 
-    let signal = reload_configs_upon_signal(&conf_path);
+    let disp2 = Arc::clone(&dispatcher);
+    let signal = reload_configs_upon_signal(&conf_path, disp2.lock().await.deref_mut());
 
     info!("listening for sighup");
 
@@ -218,12 +215,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn configure_dispatcher(conf_path: &str) -> Result<(SocketAddr), Box<dyn std::error::Error>> {
+async fn configure_dispatcher(conf_path: &str, dispatcher: &mut Ed25519SignatureDispatcher) -> Result<(SocketAddr), Box<dyn std::error::Error>> {
     let (config, keysigners, addr, tls_auth) = parse_confs(conf_path).await?;
-    let mut dispatcher = DISPATCHER.get_or_init(||{
-        Ed25519SignatureDispatcher::new(&config, &tls_auth, &keysigners)
-    });
-    // let mut dispatcher = dispatcher_mut.lock().await;
     dispatcher.config = config;
     dispatcher.keysigners = keysigners;
     dispatcher.tls_auth = tls_auth;
@@ -247,13 +240,13 @@ async fn parse_confs(conf_path: &str) -> Result<(DispatcherConfig, Vec<BytesKeyS
     Ok((config, keysigners, addr, tls_auth))
 }
 
-async fn reload_configs_upon_signal(conf_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn reload_configs_upon_signal(conf_path: &str, dispatcher: &mut Ed25519SignatureDispatcher) -> Result<(), Box<dyn std::error::Error>> {
     let mut stream = signal(SignalKind::hangup())?;
 
     // Print whenever a HUP signal is received
     loop {
         stream.recv().await;
         info!("got signal HUP");
-        configure_dispatcher(conf_path);
+        configure_dispatcher(conf_path, dispatcher);
     }
 }
