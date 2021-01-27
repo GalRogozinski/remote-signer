@@ -24,6 +24,7 @@ use remote_signer::common::config;
 use remote_signer::common::config::{BytesKeySigner, DispatcherConfig};
 use signer::signer_client::SignerClient;
 use signer::SignWithKeyRequest;
+use once_cell::sync::OnceCell;
 
 pub mod dispatcher {
     tonic::include_proto!("dispatcher");
@@ -33,15 +34,28 @@ pub mod signer {
     tonic::include_proto!("signer");
 }
 
+static DISPATCHER: OnceCell<Mutex<Ed25519SignatureDispatcher>> = OnceCell::new();
+// lazy_static! {
+    // static ref DIS: Mutex<Ed25519SignatureDispatcher> = Mutex::new
+// }
+
 #[derive(Debug)]
 pub struct Ed25519SignatureDispatcher {
     config: DispatcherConfig,
     tls_auth: ClientTlsConfig,
     keysigners: Vec<config::BytesKeySigner>,
-    config_path: String,
 }
 
 impl Ed25519SignatureDispatcher {
+
+    fn new(conf: &DispatcherConfig, tls: &ClientTlsConfig, signers: &Vec<config::BytesKeySigner>) -> Self {
+        Ed25519SignatureDispatcher {
+            config: conf.to_owned(),
+            tls_auth: tls.to_owned(),
+            keysigners: signers.to_owned()
+        }
+    }
+
     async fn connect_signer_tls(&self, endpoint: String) -> Result<Channel, Box<dyn Error>>
     {
         let tls_config = self.tls_auth.clone();
@@ -170,6 +184,8 @@ impl SignatureDispatcher for Ed25519SignatureDispatcher {
     }
 }
 
+const DISPATCH_INIT_ERROR: &'static str = "Dispatcher not intiailized";
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     SimpleLogger::from_env().with_level(LevelFilter::Info).init().unwrap();
@@ -186,21 +202,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Start");
 
     let conf_path = config_arg.value_of("config").unwrap();
-    let (addr, mut dispatcher) = create_dispatcher(conf_path).await?;
-    debug!("Initialized Dispatcher server: {:?}", dispatcher);
-
-    let conf_path = dispatcher.config_path.clone();
-    let mut conf = &dispatcher.config;
-    let mut key_signers = &dispatcher.keysigners;
-    let mut tls_auth = &dispatcher.tls_auth;
-
+    let addr = configure_dispatcher(conf_path).await?;
+    debug!("Initialized Dispatcher server: {:?}", DISPATCHER.get());
 
     let mut server = Server::builder();
-    let serv = server.add_service(SignatureDispatcherServer::new(dispatcher))
+    let serv = server.add_service(SignatureDispatcherServer::new(DISPATCHER.get().expect(DISPATCH_INIT_ERROR).into_inner()))
         .serve(addr);
     info!("Serving on {}...", addr);
 
-    let signal = reload_configs_upon_signal(conf_path, conf, &mut key_signers, tls_auth);
+    let signal = reload_configs_upon_signal(&conf_path);
 
     info!("listening for sighup");
 
@@ -208,21 +218,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn create_dispatcher(conf_path: &str) -> Result<(SocketAddr, Ed25519SignatureDispatcher), Box<dyn std::error::Error>> {
+async fn configure_dispatcher(conf_path: &str) -> Result<(SocketAddr), Box<dyn std::error::Error>> {
     let (config, keysigners, addr, tls_auth) = parse_confs(conf_path).await?;
-    let config_path = conf_path.to_string();
-    let mut dispatcher = Ed25519SignatureDispatcher {
-        config: config,
-        tls_auth: tls_auth,
-        keysigners: keysigners,
-        config_path: config_path
-    };
-    Ok((addr, dispatcher))
+    let dispatcher_mut = DISPATCHER.get_or_init(||{
+        Mutex::new(Ed25519SignatureDispatcher::new(&config, &tls_auth, &keysigners))
+    });
+    let mut dispatcher = dispatcher_mut.lock().await;
+    dispatcher.config = config;
+    dispatcher.keysigners = keysigners;
+    dispatcher.tls_auth = tls_auth;
+
+    Ok(addr)
 }
 
 async fn parse_confs(conf_path: &str) -> Result<(DispatcherConfig, Vec<BytesKeySigner>, SocketAddr, ClientTlsConfig), Box<dyn std::error::Error>> {
     info!("Parsing configuration file `{}`.", conf_path);
-    let (config, keysigners) = config::parse_dispatcher(conf_path)?;
+    let (config, keysigners) = config::parse_dispatcher_conf(conf_path)?;
     debug!("Parsed configuration file: {:?}", config);
     let addr = config.bind_addr.parse()?;
     let server_root_ca_cert = tokio::fs::read(&config.tlsauth.ca).await?;
@@ -236,20 +247,13 @@ async fn parse_confs(conf_path: &str) -> Result<(DispatcherConfig, Vec<BytesKeyS
     Ok((config, keysigners, addr, tls_auth))
 }
 
-async fn reload_configs_upon_signal(conf_path : String, mut config_a: &DispatcherConfig, mut key_signers_a: &mut Vec<BytesKeySigner>,
-mut tls_auth_a: &ClientTlsConfig) -> Result<(), Box<dyn std::error::Error>> {
+async fn reload_configs_upon_signal(conf_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut stream = signal(SignalKind::hangup())?;
 
     // Print whenever a HUP signal is received
     loop {
         stream.recv().await;
         info!("got signal HUP");
-        let (config, keysigners, _, tls_auth) = parse_confs(&conf_path).await?;
-        // config_a.clone_from(&Arc::new(config));
-        key_signers_a.clear();
-        for bk in keysigners  {
-            key_signers_a.push(bk)
-        }
-        // tls_auth_a.clone_from(&&tls_auth);
+        configure_dispatcher(conf_path);
     }
 }

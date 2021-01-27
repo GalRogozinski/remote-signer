@@ -101,7 +101,7 @@ fn validate_ed25519_privkeys(keypairs: &Vec<HexPubPriv>) -> bool {
     keypairs.iter().all(|keypair| validate_ed25519_privkey(keypair))
 }
 
-pub fn parse_dispatcher(path: &str) -> Result<(DispatcherConfig, Vec<BytesKeySigner>), Box<dyn std::error::Error>> {
+pub fn parse_dispatcher_conf(path: &str) -> Result<(DispatcherConfig, Vec<BytesKeySigner>), Box<dyn std::error::Error>> {
     let conf_file = config::File::new(path, config::FileFormat::Json);
     let mut conf = config::Config::default();
     conf.merge(conf_file)?;
