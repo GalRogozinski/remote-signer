@@ -35,21 +35,19 @@ pub mod signer {
 
 #[derive(Debug)]
 pub struct Ed25519SignatureDispatcher {
-    config: Arc<Mutex<DispatcherConfig>>,
-    tls_auth: Arc<Mutex<ClientTlsConfig>>,
-    keysigners: Arc<Mutex<Vec<config::BytesKeySigner>>>,
-    config_path: Arc<String>
+    config: DispatcherConfig,
+    tls_auth: ClientTlsConfig,
+    keysigners: Vec<config::BytesKeySigner>,
+    config_path: String,
 }
 
 impl Ed25519SignatureDispatcher {
     async fn connect_signer_tls(&self, endpoint: String) -> Result<Channel, Box<dyn Error>>
     {
-        let tls_config = Arc::clone(&self.tls_auth);
-        let conf = tls_config.lock().await;
-
+        let tls_config = self.tls_auth.clone();
         Ok(
             Channel::from_shared(endpoint)?
-                .tls_config(*conf)?
+                .tls_config(tls_config)?
                 .connect()
                 .await?
         )
@@ -83,29 +81,24 @@ impl SignatureDispatcher for Ed25519SignatureDispatcher {
 
         let r = request.get_ref();
         // Check that the pubkeys do not repeat
-        let mut pub_keys_unique = r.pub_keys.iter().unique();
+        let pub_keys_unique = r.pub_keys.iter().unique();
         // We do not need to check for the lexicographical sorting of the keys, it is not our job
 
-        let mut matched_signers: Vec<Option<BytesKeySigner>> = Vec::new();
-        {
-            let mut keysigners_guard = self.keysigners.lock().await;
-            for signer in keysigners_guard.iter() {
-                if pub_keys_unique.any(|key| signer.pubkey.eq(key)) {
-                    matched_signers.push(Some(signer.to_owned()));
-                }
-            }
-        }
-
+        let matched_signers = pub_keys_unique.map(|pubkey| {
+            self.keysigners.iter().find(
+                |keysigner| keysigner.pubkey == *pubkey
+            )
+        });
 
         // Clone the iterator to avoid consuming it for the next map
-        if matched_signers.is_empty() {
+        if matched_signers.clone().any(|signer| signer.is_none()) {
             warn!("Requested public key is not known!");
             warn!("Request: {:?}", request);
             warn!("Available Signers: {:?}", self.keysigners);
             return Err(Status::invalid_argument("I don't know the signer for one or more of the provided public keys."))
         }
 
-        let confirmed_signers = matched_signers.iter().map(|signer| signer.as_ref().unwrap());
+        let confirmed_signers = matched_signers.map(|signer| signer.unwrap());
 
         info!("Got Request that matches signers: {:?}", confirmed_signers);
 
@@ -196,10 +189,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (addr, mut dispatcher) = create_dispatcher(conf_path).await?;
     debug!("Initialized Dispatcher server: {:?}", dispatcher);
 
-    let conf_path = Arc::clone(&dispatcher.config_path);
-    let mut conf = Arc::clone(&dispatcher.config);
-    let mut key_signers = Arc::clone(&dispatcher.keysigners);
-    let mut tls_auth = Arc::clone(&dispatcher.tls_auth);
+    let conf_path = &dispatcher.config_path;
+    let mut conf = &dispatcher.config;
+    let mut key_signers = &dispatcher.keysigners;
+    let mut tls_auth = &dispatcher.tls_auth;
 
 
     let mut server = Server::builder();
@@ -207,7 +200,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .serve(addr);
     info!("Serving on {}...", addr);
 
-    let signal = reload_configs_upon_signal(&conf_path, conf, key_signers, tls_auth);
+    let signal = reload_configs_upon_signal(conf_path, conf, key_signers, tls_auth);
 
     info!("listening for sighup");
 
@@ -218,11 +211,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn create_dispatcher(conf_path: &str) -> Result<(SocketAddr, Ed25519SignatureDispatcher), Box<dyn std::error::Error>> {
     let (config, keysigners, addr, tls_auth) = parse_confs(conf_path).await?;
     let config_path = conf_path.to_string();
-    let dispatcher = Ed25519SignatureDispatcher {
-        config: Arc::new(Mutex::new(config)),
-        tls_auth: Arc::new(Mutex::new(tls_auth)),
-        keysigners: Arc::new(Mutex::new(keysigners)),
-        config_path: Arc::new(config_path)
+    let mut dispatcher = Ed25519SignatureDispatcher {
+        config: config,
+        tls_auth: tls_auth,
+        keysigners: keysigners,
+        config_path: config_path
     };
     Ok((addr, dispatcher))
 }
@@ -243,21 +236,20 @@ async fn parse_confs(conf_path: &str) -> Result<(DispatcherConfig, Vec<BytesKeyS
     Ok((config, keysigners, addr, tls_auth))
 }
 
-async fn reload_configs_upon_signal(conf_path : &str, mut config_a: Arc<Mutex<DispatcherConfig>>, mut key_signers_a: Arc<Mutex<Vec<BytesKeySigner>>>,
-mut tls_auth_a: Arc<Mutex<ClientTlsConfig>>) -> Result<(), Box<dyn std::error::Error>> {
+async fn reload_configs_upon_signal(conf_path : &str, mut config_a: &DispatcherConfig, mut key_signers_a: &Vec<BytesKeySigner>,
+mut tls_auth_a: &ClientTlsConfig) -> Result<(), Box<dyn std::error::Error>> {
     let mut stream = signal(SignalKind::hangup())?;
 
     // Print whenever a HUP signal is received
     loop {
         stream.recv().await;
         info!("got signal HUP");
-        let (config, keysigners, _, tls_auth) = parse_confs(conf_path).await?;
+        let (config, keysigners, _, tls_auth) = parse_confs(&conf_path).await?;
         // config_a.clone_from(&Arc::new(config));
-        let mut signers = key_signers_a.lock().await;
-        signers.clear();
+        key_signers_a.clear();
         for bk in keysigners  {
-            signers.push(bk)
+            key_signers_a.push(bk)
         }
-        tls_auth_a.clone_from(&Arc::new(Mutex::new(tls_auth)));
+        // tls_auth_a.clone_from(&&tls_auth);
     }
 }
