@@ -34,7 +34,7 @@ pub mod signer {
     tonic::include_proto!("signer");
 }
 
-static DISPATCHER: OnceCell<Mutex<Ed25519SignatureDispatcher>> = OnceCell::new();
+static DISPATCHER: OnceCell<Ed25519SignatureDispatcher> = OnceCell::new();
 // lazy_static! {
     // static ref DIS: Mutex<Ed25519SignatureDispatcher> = Mutex::new
 // }
@@ -203,10 +203,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let conf_path = config_arg.value_of("config").unwrap();
     let addr = configure_dispatcher(conf_path).await?;
-    debug!("Initialized Dispatcher server: {:?}", DISPATCHER.get());
+    // debug!("Initialized Dispatcher server: {:?}", DISPATCHER.get());
 
     let mut server = Server::builder();
-    let serv = server.add_service(SignatureDispatcherServer::new(DISPATCHER.get().expect(DISPATCH_INIT_ERROR).into_inner()))
+    let serv = server.add_service(SignatureDispatcherServer::new(DISPATCHER.get().expect(DISPATCH_INIT_ERROR)))
         .serve(addr);
     info!("Serving on {}...", addr);
 
@@ -220,10 +220,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn configure_dispatcher(conf_path: &str) -> Result<(SocketAddr), Box<dyn std::error::Error>> {
     let (config, keysigners, addr, tls_auth) = parse_confs(conf_path).await?;
-    let dispatcher_mut = DISPATCHER.get_or_init(||{
-        Mutex::new(Ed25519SignatureDispatcher::new(&config, &tls_auth, &keysigners))
+    let mut dispatcher = DISPATCHER.get_or_init(||{
+        Ed25519SignatureDispatcher::new(&config, &tls_auth, &keysigners)
     });
-    let mut dispatcher = dispatcher_mut.lock().await;
+    // let mut dispatcher = dispatcher_mut.lock().await;
     dispatcher.config = config;
     dispatcher.keysigners = keysigners;
     dispatcher.tls_auth = tls_auth;
