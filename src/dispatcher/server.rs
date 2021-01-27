@@ -189,7 +189,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (addr, mut dispatcher) = create_dispatcher(conf_path).await?;
     debug!("Initialized Dispatcher server: {:?}", dispatcher);
 
-    let conf_path = &dispatcher.config_path;
+    let conf_path = dispatcher.config_path.clone();
     let mut conf = &dispatcher.config;
     let mut key_signers = &dispatcher.keysigners;
     let mut tls_auth = &dispatcher.tls_auth;
@@ -200,7 +200,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .serve(addr);
     info!("Serving on {}...", addr);
 
-    let signal = reload_configs_upon_signal(conf_path, conf, key_signers, tls_auth);
+    let signal = reload_configs_upon_signal(conf_path, conf, &mut key_signers, tls_auth);
 
     info!("listening for sighup");
 
@@ -236,7 +236,7 @@ async fn parse_confs(conf_path: &str) -> Result<(DispatcherConfig, Vec<BytesKeyS
     Ok((config, keysigners, addr, tls_auth))
 }
 
-async fn reload_configs_upon_signal(conf_path : &str, mut config_a: &DispatcherConfig, mut key_signers_a: &Vec<BytesKeySigner>,
+async fn reload_configs_upon_signal(conf_path : String, mut config_a: &DispatcherConfig, mut key_signers_a: &mut Vec<BytesKeySigner>,
 mut tls_auth_a: &ClientTlsConfig) -> Result<(), Box<dyn std::error::Error>> {
     let mut stream = signal(SignalKind::hangup())?;
 
