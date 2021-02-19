@@ -1,6 +1,33 @@
 version: '3'
 
 services:
+  signer:
+    image: remote-signer.signer
+    build:
+      context: ../../
+      dockerfile: docker/signer/Dockerfile
+    restart: unless-stopped
+    environment:
+      - RUST_LOG=info
+    volumes:
+      - ./config:/config:ro
+    command:
+      --config /config/signer_config.json
+    expose:
+      - "50052"
+    labels:
+      - "traefik.enable=true"
+      #change host
+      - "traefik.http.routers.signer.rule=Host(`signer.iota`)"
+      - "traefik.http.routers.signer.service=signer"
+      - "traefik.http.services.signer.loadbalancer.server.port=50052"
+      - "traefik.http.services.signer.loadbalancer.server.scheme=h2c"
+      - "traefik.http.routers.signer.entrypoints=websecure"
+      - "traefik.http.routers.signer.tls.certresolver=devops"
+      #if we comment the lines, it will work. No force verify, use the lax RequestClientCert to show weird it is
+      - "traefik.http.routers.signer.tls.options.default.clientAuth.caFiles=[/certs/ca.crt]"
+      - "traefik.http.routers.signer.tls.options.default.clientAuth.clientAuthType=RequestClientCert"
+
   reverse-proxy:
     # The official v2.0 Traefik docker 
     # remove library
@@ -29,30 +56,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik_logs:/opt/logs
       - ./letsencrypt:/letsencrypt
-
-  signer:
-    image: remote-signer.signer
-    build:
-      context: ../../
-      dockerfile: docker/signer/Dockerfile
-    restart: unless-stopped
-    environment:
-      - RUST_LOG=info
-    volumes:
-      - ./config:/config:ro
-    command:
-      --config /config/signer_config.json
-    expose:
-      - "50052"
-    labels:
-      - "traefik.enable=true"
-      #change host
-      - "traefik.http.routers.signer.rule=Host(`signer.iota`)"
-      - "traefik.http.routers.signer.service=signer"
-      - "traefik.http.services.signer.loadbalancer.server.port=50052"
-      - "traefik.http.services.signer.loadbalancer.server.scheme=h2c"
-      - "traefik.http.routers.signer.entrypoints=websecure"
-      - "traefik.http.routers.signer.tls.certresolver=devops"
-      - "traefik.http.routers.signer.tls.options.default.clientAuth.caFiles=[/certs/ca.crt]"
-      - "traefik.http.routers.signer.tls.options.default.clientAuth.clientAuthType=RequestClientCert"
+      #maybe the volume is bad?
+      - ./certs:/certs
 
